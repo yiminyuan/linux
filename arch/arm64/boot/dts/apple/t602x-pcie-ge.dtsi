@@ -46,7 +46,13 @@
 		bus-range = <0 15>;
 		#address-cells = <3>;
 		#size-cells = <2>;
-		ranges = <0x43000000 0x18 0x00000000 0x18 0x00000000 0x4 0x00000000>,
+		/*
+		 * The 64-bit window is not translated by the controller: the
+		 * PCI bus address equals the CPU physical address, which on
+		 * die 1 is offset by 0x20_0000_0000 (see die1 ranges in
+		 * t6022.dtsi). The 32-bit window is translated.
+		 */
+		ranges = <0x43000000 (0x18 + 0x20 * DIE_NO) 0x00000000 0x18 0x00000000 0x4 0x00000000>,
 			 <0x02000000 0x00 0x80000000 0x17 0x80000000 0x0 0x80000000>;
 
 		power-domains = <&DIE_NODE(ps_apcie_ge_sys)>;
