@@ -1247,6 +1247,28 @@ config ARM64_ERRATUM_4118414
 
 	  If unsure, say Y.
 
+config APPLE_DC_ZVA_ERRATUM
+	bool "Apple M2 Max/Ultra: DC ZVA to a PCIe BAR raises a fatal SError"
+	default y
+	help
+	  On Apple M2 Max and M2 Ultra SoCs, a DC ZVA instruction that targets
+	  a PCIe BAR mapped as Normal Non-cacheable memory (write-combining,
+	  for example via ioremap_wc() or pgprot_writecombine()) is not
+	  accepted by the PCIe interconnect and raises an asynchronous SError,
+	  which is fatal. Ordinary stores to the same mapping work.
+
+	  Discrete GPU drivers and their userspace map VRAM write-combining
+	  and clear it with memset(), which uses DC ZVA whenever
+	  DCZID_EL0.DZP is clear.
+
+	  The workaround makes the kernel memset() avoid DC ZVA outside the
+	  linear map, which never maps PCIe BARs as Normal memory, clears
+	  SCTLR_ELx.DZE so that DC ZVA is prohibited at EL0 (DCZID_EL0.DZP
+	  then reads as 1 there, which C libraries honour), and emulates any
+	  EL0 DC ZVA that still traps with ordinary stores.
+
+	  If unsure, say Y.
+
 config CAVIUM_ERRATUM_22375
 	bool "Cavium erratum 22375, 24313"
 	default y

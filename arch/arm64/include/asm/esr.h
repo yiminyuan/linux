@@ -248,7 +248,7 @@
 /*
  * User space cache operations have the following sysreg encoding
  * in System instructions.
- * op0=1, op1=3, op2=1, crn=7, crm={ 5, 10, 11, 12, 13, 14 }, WRITE (L=0)
+ * op0=1, op1=3, op2=1, crn=7, crm={ 4, 5, 10, 11, 12, 13, 14 }, WRITE (L=0)
  */
 #define ESR_ELx_SYS64_ISS_CRM_DC_CIVAC	14
 #define ESR_ELx_SYS64_ISS_CRM_DC_CVADP	13
@@ -256,6 +256,7 @@
 #define ESR_ELx_SYS64_ISS_CRM_DC_CVAU	11
 #define ESR_ELx_SYS64_ISS_CRM_DC_CVAC	10
 #define ESR_ELx_SYS64_ISS_CRM_IC_IVAU	5
+#define ESR_ELx_SYS64_ISS_CRM_DC_ZVA	4
 
 #define ESR_ELx_SYS64_ISS_EL0_CACHE_OP_MASK	(ESR_ELx_SYS64_ISS_OP0_MASK | \
 						 ESR_ELx_SYS64_ISS_OP1_MASK | \

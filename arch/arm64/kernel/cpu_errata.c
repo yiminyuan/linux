@@ -203,6 +203,25 @@ cpu_enable_cache_maint_trap(const struct arm64_cpu_capabilities *__unused)
 	sysreg_clear_set(sctlr_el1, SCTLR_EL1_UCI, 0);
 }
 
+#ifdef CONFIG_APPLE_DC_ZVA_ERRATUM
+static const struct midr_range apple_dc_zva_cpus[] = {
+	MIDR_ALL_VERSIONS(MIDR_APPLE_M2_BLIZZARD_MAX),
+	MIDR_ALL_VERSIONS(MIDR_APPLE_M2_AVALANCHE_MAX),
+	{},
+};
+
+static void
+cpu_enable_apple_dc_zva_trap(const struct arm64_cpu_capabilities *__unused)
+{
+	/*
+	 * Prohibit DC ZVA at EL0: it traps to the kernel, which emulates it
+	 * with ordinary stores, and DCZID_EL0.DZP reads as 1 at EL0 so that
+	 * userspace does not use it in the first place.
+	 */
+	sysreg_clear_set(sctlr_el1, SCTLR_EL1_DZE, 0);
+}
+#endif
+
 #define CAP_MIDR_RANGE(model, v_min, r_min, v_max, r_max)	\
 	.matches = is_affected_midr_range,			\
 	.midr_range = MIDR_RANGE(model, v_min, r_min, v_max, r_max)
@@ -877,6 +896,14 @@ const struct arm64_cpu_capabilities arm64_errata[] = {
 		ERRATA_MIDR_RANGE(MIDR_CORTEX_A77,
 				  0, 0,
 				  1, 0),
+	},
+#endif
+#ifdef CONFIG_APPLE_DC_ZVA_ERRATUM
+	{
+		.desc = "Apple DC ZVA to PCIe BAR erratum",
+		.capability = ARM64_WORKAROUND_APPLE_DC_ZVA,
+		ERRATA_MIDR_RANGE_LIST(apple_dc_zva_cpus),
+		.cpu_enable = cpu_enable_apple_dc_zva_trap,
 	},
 #endif
 #ifdef CONFIG_ARM64_WORKAROUND_DISABLE_CNP
