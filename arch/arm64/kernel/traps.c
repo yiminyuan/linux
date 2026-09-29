@@ -558,6 +558,19 @@ void do_el1_mops(struct pt_regs *regs, unsigned long esr)
 		uaccess_ttbr0_disable();			\
 	}
 
+/*
+ * Emulate DC ZVA, which traps when SCTLR_ELx.DZE is clear: zero the naturally
+ * aligned block containing @address with ordinary stores.
+ */
+static int user_dc_zva(unsigned long address)
+{
+	unsigned long bs = 4UL << SYS_FIELD_GET(DCZID_EL0, BS,
+						 read_sysreg(dczid_el0));
+
+	address = ALIGN_DOWN(address, bs);
+	return clear_user((void __user *)address, bs) ? -EFAULT : 0;
+}
+
 static void user_cache_maint_handler(unsigned long esr, struct pt_regs *regs)
 {
 	unsigned long tagged_address, address;
@@ -586,6 +599,9 @@ static void user_cache_maint_handler(unsigned long esr, struct pt_regs *regs)
 		break;
 	case ESR_ELx_SYS64_ISS_CRM_IC_IVAU:	/* IC IVAU */
 		__user_cache_maint("ic ivau", address, ret);
+		break;
+	case ESR_ELx_SYS64_ISS_CRM_DC_ZVA:	/* DC ZVA, prohibited at EL0 */
+		ret = user_dc_zva(address);
 		break;
 	default:
 		force_signal_inject(SIGILL, ILL_ILLOPC, regs->pc, 0);

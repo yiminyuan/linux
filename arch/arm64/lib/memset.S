@@ -146,6 +146,10 @@ SYM_FUNC_START_LOCAL(__pi_memset_generic)
 	cmp	count, #128
 	b.lt	.Lnot_short /*count is at least  128 bytes*/
 
+alternative_if ARM64_WORKAROUND_APPLE_DC_ZVA
+	b	.Lzva_apple
+alternative_else_nop_endif
+.Lzva_allowed:
 	mrs	tmp1, dczid_el0
 	tbnz	tmp1, #4, .Lnot_short
 	mov	tmp3w, #4
@@ -202,6 +206,20 @@ SYM_FUNC_START_LOCAL(__pi_memset_generic)
 	ands	count, count, zva_bits_x
 	b.ne	.Ltail_maybe_long
 	ret
+
+	/*
+	 * DC ZVA must not reach a PCIe BAR on affected Apple SoCs. Below
+	 * _PAGE_END(VA_BITS_MIN) there is only the linear map and the KASAN
+	 * shadow, both RAM; every other kernel mapping, including ioremap(),
+	 * lies above it. Keep using DC ZVA there.
+	 */
+.Lzva_apple:
+	mov_q	tmp1, PAGE_OFFSET
+	sub	tmp1, dst, tmp1
+	mov_q	tmp2, _PAGE_END(VA_BITS_MIN) - PAGE_OFFSET
+	cmp	tmp1, tmp2
+	b.lo	.Lzva_allowed
+	b	.Lnot_short
 SYM_FUNC_END(__pi_memset_generic)
 
 #ifdef CONFIG_AS_HAS_MOPS
