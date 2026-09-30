@@ -44,6 +44,7 @@
 		iommu-map-mask = <0xff00>;
 
 		bus-range = <0 15>;
+		linux,pci-domain = <DIE_NO>;
 		#address-cells = <3>;
 		#size-cells = <2>;
 		/*
