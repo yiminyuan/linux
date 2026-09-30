@@ -2301,12 +2301,90 @@ void pci_assign_unassigned_bridge_resources(struct pci_dev *bridge)
 EXPORT_SYMBOL_GPL(pci_assign_unassigned_bridge_resources);
 
 /*
+ * @pinned lists the bridge windows that could not be released because they
+ * still contain assigned resources, ordered from the root bus down. Extend
+ * each one as far as its parent window and next sibling allow, so that the
+ * released resources below can be placed next to the ones that stay put.
+ * Only the resource tree changes here; the bridges are programmed once the
+ * final size is known.
+ */
+static void pbus_grow_pinned_windows(struct list_head *pinned)
+{
+	struct pci_dev_resource *dev_res;
+
+	list_for_each_entry(dev_res, pinned, list) {
+		struct resource *res = dev_res->res;
+		struct pci_bus *bus = dev_res->dev->subordinate;
+		resource_size_t end;
+
+		end = res->parent->end;
+		if (res->sibling)
+			end = min(end, res->sibling->start - 1);
+		end = ALIGN_DOWN(end + 1, pci_min_window_alignment(bus, res->flags)) - 1;
+		if (end > res->end)
+			adjust_resource(res, res->start, end - res->start + 1);
+	}
+}
+
+/*
+ * Shrink the windows in @pinned back to their original end, or to the end of
+ * the last resource now assigned in them if that is higher, and program the
+ * bridges whose window changed.
+ */
+static void pbus_trim_pinned_windows(struct list_head *pinned)
+{
+	struct pci_dev_resource *dev_res;
+
+	list_for_each_entry_reverse(dev_res, pinned, list) {
+		struct resource *res = dev_res->res, *child;
+		struct pci_bus *bus = dev_res->dev->subordinate;
+		resource_size_t end = dev_res->end;
+
+		for (child = res->child; child; child = child->sibling)
+			end = max(end, child->end);
+		end = ALIGN(end + 1, pci_min_window_alignment(bus, res->flags)) - 1;
+		adjust_resource(res, res->start, end - res->start + 1);
+	}
+
+	list_for_each_entry(dev_res, pinned, list) {
+		struct pci_dev *bridge = dev_res->dev;
+		struct resource *res = dev_res->res;
+
+		if (res->end == dev_res->end)
+			continue;
+
+		pci_info(bridge, "%s %pR: extended for resized resources\n",
+			 pci_resource_name(bridge, pci_resource_num(bridge, res)),
+			 res);
+		pci_setup_bridge(bridge->subordinate);
+	}
+}
+
+/* Undo pbus_grow_pinned_windows() after the resize has been rolled back. */
+static void pbus_restore_pinned_windows(struct list_head *pinned)
+{
+	struct pci_dev_resource *dev_res;
+
+	list_for_each_entry_reverse(dev_res, pinned, list) {
+		struct resource *res = dev_res->res;
+
+		if (res->end != dev_res->end &&
+		    adjust_resource(res, dev_res->start,
+				    dev_res->end - dev_res->start + 1))
+			pci_warn(dev_res->dev, "%pR: failed to restore window\n",
+				 res);
+	}
+}
+
+/*
  * Walk to the root bus, find the bridge window relevant for @res and
  * release it when possible. If the bridge window contains assigned
- * resources, it cannot be released.
+ * resources, it cannot be released; it is recorded in @pinned and extended
+ * in place instead.
  */
 static int pbus_reassign_bridge_resources(struct pci_bus *bus, struct resource *res,
-					  struct list_head *saved)
+					  struct list_head *saved,
+					  struct list_head *pinned)
 {
 	unsigned long type = res->flags;
 	struct pci_dev_resource *dev_res;
@@ -2334,9 +2412,13 @@ static int pbus_reassign_bridge_resources(struct pci_bus *bus, struct resource *
 		} else {
 			const char *res_name = pci_resource_name(bridge, i);
 
-			pci_warn(bridge,
+			pci_info(bridge,
 				 "%s %pR: was not released (still contains assigned resources)\n",
 				 res_name, res);
+
+			ret = pci_dev_res_add_to_list(pinned, bridge, res, 0, 0);
+			if (ret)
+				return ret;
 		}
 
 		bus = bus->parent;
@@ -2344,6 +2426,8 @@ static int pbus_reassign_bridge_resources(struct pci_bus *bus, struct resource *
 
 	if (!bridge)
 		return -ENOENT;
+
+	pbus_grow_pinned_windows(pinned);
 
 	__pci_bus_size_bridges(bridge->subordinate, &add_list);
 	__pci_bridge_assign_resources(bridge, &add_list, &failed);
@@ -2357,6 +2441,8 @@ static int pbus_reassign_bridge_resources(struct pci_bus *bus, struct resource *
 
 		/* Only resources with unrelated types failed (again) */
 	}
+
+	pbus_trim_pinned_windows(pinned);
 
 	list_for_each_entry(dev_res, saved, list) {
 		struct pci_dev *dev = dev_res->dev;
@@ -2383,6 +2469,7 @@ int pci_do_resource_release_and_resize(struct pci_dev *pdev, int resno, int size
 	struct pci_dev *bridge = pci_upstream_bridge(pdev);
 	struct resource *b_win, *r;
 	LIST_HEAD(saved);
+	LIST_HEAD(pinned);
 	unsigned int i;
 	int old, ret;
 
@@ -2419,7 +2506,7 @@ int pci_do_resource_release_and_resize(struct pci_dev *pdev, int resno, int size
 	pci_resize_resource_set_size(pdev, resno, size);
 
 	if (bridge) {
-		ret = pbus_reassign_bridge_resources(bus, res, &saved);
+		ret = pbus_reassign_bridge_resources(bus, res, &saved, &pinned);
 		if (ret)
 			goto restore;
 	} else {
@@ -2437,6 +2524,7 @@ int pci_do_resource_release_and_resize(struct pci_dev *pdev, int resno, int size
 out:
 	up_read(&pci_bus_sem);
 	pci_dev_res_free_list(&saved);
+	pci_dev_res_free_list(&pinned);
 	return ret;
 
 restore:
@@ -2475,6 +2563,7 @@ restore:
 		if (dev->subordinate)
 			pci_setup_bridge(dev->subordinate);
 	}
+	pbus_restore_pinned_windows(&pinned);
 	goto out;
 }
 
