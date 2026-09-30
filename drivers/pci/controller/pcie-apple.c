@@ -984,6 +984,12 @@ static int apple_pcie_probe(struct platform_device *pdev)
 	mutex_init(&pcie->lock);
 	INIT_LIST_HEAD(&pcie->ports);
 
+	/*
+	 * The boot firmware does not raise link speeds: the links behind the
+	 * Mac Pro's PCIe switch stay at 2.5GT/s until the OS retrains them.
+	 */
+	bridge->raise_link_speed = 1;
+
 	ret = apple_msi_init(pcie);
 	if (ret)
 		return ret;
