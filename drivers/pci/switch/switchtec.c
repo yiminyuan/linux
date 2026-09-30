@@ -140,19 +140,6 @@ static void stuser_set_state(struct switchtec_user *stuser,
 
 static void mrpc_complete_cmd(struct switchtec_dev *stdev);
 
-static void flush_wc_buf(struct switchtec_dev *stdev)
-{
-	struct ntb_dbmsg_regs __iomem *mmio_dbmsg;
-
-	/*
-	 * odb (outbound doorbell) register is processed by low latency
-	 * hardware and w/o side effect
-	 */
-	mmio_dbmsg = (void __iomem *)stdev->mmio_ntb +
-		SWITCHTEC_NTB_REG_DBMSG_OFFSET;
-	ioread32(&mmio_dbmsg->odb);
-}
-
 static void mrpc_cmd_submit(struct switchtec_dev *stdev)
 {
 	/* requires the mrpc_mutex to already be held when called */
@@ -177,7 +164,6 @@ static void mrpc_cmd_submit(struct switchtec_dev *stdev)
 	stdev->mrpc_busy = 1;
 	memcpy_toio(&stdev->mmio_mrpc->input_data,
 		    stuser->data, stuser->data_len);
-	flush_wc_buf(stdev);
 	iowrite32(stuser->cmd, &stdev->mmio_mrpc->cmd);
 
 	schedule_delayed_work(&stdev->mrpc_timeout,
@@ -1301,7 +1287,6 @@ static void enable_link_state_events(struct switchtec_dev *stdev)
 static void enable_dma_mrpc(struct switchtec_dev *stdev)
 {
 	writeq(stdev->dma_mrpc_dma_addr, &stdev->mmio_mrpc->dma_addr);
-	flush_wc_buf(stdev);
 	iowrite32(SWITCHTEC_DMA_MRPC_EN, &stdev->mmio_mrpc->dma_en);
 }
 
@@ -1565,7 +1550,6 @@ static int switchtec_init_pci(struct switchtec_dev *stdev,
 			      struct pci_dev *pdev)
 {
 	int rc;
-	void __iomem *map;
 	unsigned long res_start, res_len;
 	u32 __iomem *part_id;
 
@@ -1586,18 +1570,11 @@ static int switchtec_init_pci(struct switchtec_dev *stdev,
 				     res_len, KBUILD_MODNAME))
 		return -EBUSY;
 
-	stdev->mmio_mrpc = devm_ioremap_wc(&pdev->dev, res_start,
-					   SWITCHTEC_GAS_TOP_CFG_OFFSET);
-	if (!stdev->mmio_mrpc)
+	stdev->mmio = devm_ioremap(&pdev->dev, res_start, res_len);
+	if (!stdev->mmio)
 		return -ENOMEM;
 
-	map = devm_ioremap(&pdev->dev,
-			   res_start + SWITCHTEC_GAS_TOP_CFG_OFFSET,
-			   res_len - SWITCHTEC_GAS_TOP_CFG_OFFSET);
-	if (!map)
-		return -ENOMEM;
-
-	stdev->mmio = map - SWITCHTEC_GAS_TOP_CFG_OFFSET;
+	stdev->mmio_mrpc = stdev->mmio + SWITCHTEC_GAS_MRPC_OFFSET;
 	stdev->mmio_sw_event = stdev->mmio + SWITCHTEC_GAS_SW_EVENT_OFFSET;
 	stdev->mmio_sys_info = stdev->mmio + SWITCHTEC_GAS_SYS_INFO_OFFSET;
 	stdev->mmio_flash_info = stdev->mmio + SWITCHTEC_GAS_FLASH_INFO_OFFSET;
@@ -1643,7 +1620,6 @@ static void switchtec_exit_pci(struct switchtec_dev *stdev)
 {
 	if (stdev->dma_mrpc) {
 		iowrite32(0, &stdev->mmio_mrpc->dma_en);
-		flush_wc_buf(stdev);
 		writeq(0, &stdev->mmio_mrpc->dma_addr);
 		dma_free_coherent(&stdev->pdev->dev, sizeof(*stdev->dma_mrpc),
 				  stdev->dma_mrpc, stdev->dma_mrpc_dma_addr);
