@@ -2723,6 +2723,68 @@ static void pci_set_msi_domain(struct pci_dev *dev)
 	dev_set_msi_domain(&dev->dev, d);
 }
 
+/*
+ * Some host controllers leave the links below them at the speed they first
+ * trained to, even though both ends and the Target Link Speed of the
+ * Downstream Port allow more, and rely on software to request the speed
+ * change.  Retrain such a link when its first device is added, up to the
+ * Target Link Speed already programmed in the port.  The Target Link Speed
+ * itself is left unchanged.
+ */
+static void pcie_raise_link_speed(struct pci_dev *dev)
+{
+	struct pci_dev *port = dev->bus->self;
+	enum pci_bus_speed cur, prev, target;
+	u16 lnksta, lnkctl2;
+	int ret;
+
+	if (!port || !pci_is_pcie(dev) || !pci_is_pcie(port) ||
+	    !pcie_downstream_port(port) || !pcie_cap_has_lnkctl2(port) ||
+	    !port->link_active_reporting || !list_empty(&dev->bus->devices) ||
+	    !pci_find_host_bridge(dev->bus)->raise_link_speed)
+		return;
+
+	pcie_capability_read_word(port, PCI_EXP_LNKSTA, &lnksta);
+	pcie_capability_read_word(port, PCI_EXP_LNKCTL2, &lnkctl2);
+	if (!(lnksta & PCI_EXP_LNKSTA_DLLLA))
+		return;
+
+	target = min(PCIE_LNKCTL2_TLS2SPEED(lnkctl2),
+		     PCIE_LNKCAP2_SLS2SPEED(port->supported_speeds &
+					    dev->supported_speeds));
+	cur = pcie_link_speed[FIELD_GET(PCI_EXP_LNKSTA_CLS, lnksta)];
+	if (target == PCI_SPEED_UNKNOWN || cur >= target)
+		return;
+
+	/*
+	 * @dev is not on the bus yet, so pcie_set_target_speed() only takes
+	 * the port's Supported Link Speeds into account and rewrites the
+	 * Target Link Speed with its current value.  The link then negotiates
+	 * the highest speed both ends support, but a single retrain may stop
+	 * at an intermediate speed (e.g. 8GT/s on a 16GT/s link), so retrain
+	 * again as long as the speed keeps rising.
+	 */
+	do {
+		prev = cur;
+		ret = pcie_set_target_speed(port, PCIE_LNKCTL2_TLS2SPEED(lnkctl2),
+					    true);
+		if (ret) {
+			pci_warn(port, "failed to retrain link to %s (%d)\n",
+				 pci_speed_string(target), ret);
+			return;
+		}
+
+		pcie_capability_read_word(port, PCI_EXP_LNKSTA, &lnksta);
+		cur = pcie_link_speed[FIELD_GET(PCI_EXP_LNKSTA_CLS, lnksta)];
+	} while (cur > prev && cur < target);
+
+	if (cur < target)
+		pci_warn(port, "link retrained to %s, expected %s\n",
+			 pci_speed_string(cur), pci_speed_string(target));
+	else
+		pci_info(port, "link retrained to %s\n", pci_speed_string(cur));
+}
+
 void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 {
 	int ret;
@@ -2741,6 +2803,7 @@ void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 	dma_set_seg_boundary(&dev->dev, 0xffffffff);
 
 	pcie_failed_link_retrain(dev);
+	pcie_raise_link_speed(dev);
 
 	/* Fix up broken headers */
 	pci_fixup_device(pci_fixup_header, dev);
