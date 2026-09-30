@@ -211,10 +211,83 @@ static int of_pci_prop_intr_ctrl(struct pci_dev *pdev, struct of_changeset *ocs,
 	return of_changeset_add_prop_bool(ocs, np, "interrupt-controller");
 }
 
+/*
+ * Find the closest node above @pdev that an interrupt-map entry can refer to
+ * by phandle, and the unit address of the device on @pdev's path right below
+ * it.  Nodes without a phandle are skipped with the standard PCI swizzle,
+ * updating @pin accordingly; the caller verifies the result.
+ */
+static struct device_node *of_pci_intr_map_parent(struct pci_dev *pdev,
+						  u8 *pin, u32 *addr)
+{
+	struct pci_dev *bridge;
+	struct device_node *np;
+
+	for (;;) {
+		bridge = pdev->bus->self;
+		np = bridge ? pci_device_to_OF_node(bridge) :
+			      pci_bus_to_OF_node(pdev->bus);
+		if (!np || np->phandle || !bridge)
+			break;
+		*pin = pci_swizzle_interrupt_pin(pdev, *pin);
+		pdev = bridge;
+	}
+
+	*addr = (pdev->bus->number << 16) | (pdev->devfn << 8);
+	return np;
+}
+
+/*
+ * An interrupt-map entry pointing at the resolved interrupt @irq does not
+ * work if the interrupt controller node also has an interrupt-map (e.g. a
+ * PCIe root port that is its own INTx controller): of_irq_parse_raw() applies
+ * that map again to the already translated specifier.  Replace @irq with the
+ * closest node above @pdev that has a phandle, and the pin its interrupt-map
+ * expects at unit address @addr, if that resolves to the same interrupt.
+ */
+static int of_pci_intr_map_nexus(struct pci_dev *pdev, u8 pin,
+				 struct of_phandle_args *irq, u32 *addr)
+{
+	__be32 paddr[OF_PCI_ADDRESS_CELLS] = { 0 };
+	struct of_phandle_args chk;
+	struct device_node *np;
+	bool same;
+	u32 cells;
+	int ret;
+
+	np = of_pci_intr_map_parent(pdev, &pin, addr);
+	if (!np || !np->phandle ||
+	    of_property_read_u32(np, "#interrupt-cells", &cells) || cells != 1 ||
+	    of_property_read_u32(np, "#address-cells", &cells) ||
+	    cells != OF_PCI_ADDRESS_CELLS)
+		return -EINVAL;
+
+	paddr[0] = cpu_to_be32(*addr);
+	chk.np = np;
+	chk.args_count = 1;
+	chk.args[0] = pin;
+	ret = of_irq_parse_raw(paddr, &chk);
+	if (ret)
+		return ret;
+
+	same = chk.np == irq->np && chk.args_count == irq->args_count &&
+	       !memcmp(chk.args, irq->args, irq->args_count * sizeof(u32));
+	of_node_put(chk.np);
+	if (!same)
+		return -EINVAL;
+
+	of_node_put(irq->np);
+	irq->np = of_node_get(np);
+	irq->args_count = 1;
+	irq->args[0] = pin;
+	return 0;
+}
+
 static int of_pci_prop_intr_map(struct pci_dev *pdev, struct of_changeset *ocs,
 				struct device_node *np)
 {
 	u32 i, addr_sz[OF_PCI_MAX_INT_PIN] = { 0 }, map_sz = 0;
+	u32 paddr[OF_PCI_MAX_INT_PIN] = { 0 };
 	struct of_phandle_args out_irq[OF_PCI_MAX_INT_PIN];
 	__be32 laddr[OF_PCI_ADDRESS_CELLS] = { 0 };
 	u32 int_map_mask[] = { 0xffff00, 0, 0, 7 };
@@ -248,6 +321,21 @@ static int of_pci_prop_intr_map(struct pci_dev *pdev, struct of_changeset *ocs,
 			pci_dbg(pdev, "parse irq %d failed, ret %d", pin, ret);
 			continue;
 		}
+
+		if (of_property_present(out_irq[i].np, "interrupt-map")) {
+			ret = of_pci_intr_map_nexus(pdev, pin, &out_irq[i],
+						    &paddr[i]);
+			if (ret) {
+				of_node_put(out_irq[i].np);
+				out_irq[i].np = NULL;
+				pci_dbg(pdev, "no interrupt-map entry for irq %d, ret %d",
+					pin, ret);
+				continue;
+			}
+			addr_sz[i] = OF_PCI_ADDRESS_CELLS;
+			continue;
+		}
+
 		of_property_read_u32(out_irq[i].np, "#address-cells",
 				     &addr_sz[i]);
 	}
@@ -299,8 +387,11 @@ static int of_pci_prop_intr_map(struct pci_dev *pdev, struct of_changeset *ocs,
 			 *
 			 * Leave the parent unit address initialized to 0 --
 			 * just take into account the #address-cells size
-			 * to build the property properly.
+			 * to build the property properly -- unless the parent
+			 * is matched through its interrupt-map (see above).
 			 */
+			if (addr_sz[i])
+				*mapp = paddr[i];
 			mapp += addr_sz[i];
 			memcpy(mapp, out_irq[i].args,
 			       out_irq[i].args_count * sizeof(u32));
