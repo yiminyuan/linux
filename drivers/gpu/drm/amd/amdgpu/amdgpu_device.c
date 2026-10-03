@@ -1093,7 +1093,7 @@ int amdgpu_device_resize_fb_bar(struct amdgpu_device *adev)
 	int rbar_size = pci_rebar_bytes_to_size(adev->gmc.real_vram_size);
 	struct pci_bus *root;
 	struct resource *res;
-	int max_size, r;
+	int max_size, exclude_bars, r = 0;
 	unsigned int i;
 	u16 cmd;
 
@@ -1154,9 +1154,23 @@ int amdgpu_device_resize_fb_bar(struct amdgpu_device *adev)
 	/* Tear down doorbell as resizing will release BARs */
 	amdgpu_doorbell_fini(adev);
 
-	r = pci_resize_resource(adev->pdev, 0, rbar_size,
-				(adev->asic_type >= CHIP_BONAIRE) ? 1 << 5
-								  : 1 << 2);
+	exclude_bars = (adev->asic_type >= CHIP_BONAIRE) ? 1 << 5 : 1 << 2;
+
+	/*
+	 * The upstream bridge windows may not have room for a BAR covering
+	 * all of VRAM. A failed resize restores the old BAR, so fall back to
+	 * smaller supported sizes, as long as they beat the current BAR.
+	 */
+	for (; rbar_size >= 0; rbar_size--) {
+		if (pci_rebar_size_to_bytes(rbar_size) <=
+		    pci_resource_len(adev->pdev, 0))
+			break;
+		if (!pci_rebar_size_supported(adev->pdev, 0, rbar_size))
+			continue;
+		r = pci_resize_resource(adev->pdev, 0, rbar_size, exclude_bars);
+		if (r != -ENOSPC)
+			break;
+	}
 	if (r == -ENOSPC)
 		dev_info(adev->dev,
 			 "Not enough PCI address space for a large BAR.");
