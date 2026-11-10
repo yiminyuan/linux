@@ -1032,7 +1032,7 @@
 
 			wifi0: wifi@0,0 {
 				reg = <0x80000 0x0 0x0 0x0 0x0>;
-				compatible = "pci14e4,4433";
+				compatible = "pci14e4,4434";
 				brcm,board-type = "apple,sumatra";
 				apple,antenna-sku = "XX";
 				/* To be filled by the loader */
@@ -1040,7 +1040,7 @@
 			};
 
 			bluetooth0: network@0,1 {
-				compatible = "pci14e4,5f71";
+				compatible = "pci14e4,5f72";
 				brcm,board-type = "apple,sumatra";
 				reg = <0x80100 0x0 0x0 0x0 0x0>;
 				/* To be filled by the loader */
