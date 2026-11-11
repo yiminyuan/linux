@@ -503,6 +503,8 @@ struct bcm4377_data;
  *                               reserved bits of Primary/Secondary_PHY inside
  *                               LE Extended Advertising Report events which
  *                               have to be ignored
+ * beamforming_cal_only: Set to true if this chip only ever uses the
+ *                       beamforming calibration blob
  * send_calibration: Optional callback to send calibration data
  * send_ptb: Callback to send "PTB" regulatory/calibration data
  */
@@ -523,6 +525,7 @@ struct bcm4377_hw {
 	unsigned long broken_mws_transport_config : 1;
 	unsigned long broken_le_coded : 1;
 	unsigned long broken_le_ext_adv_report_phy : 1;
+	unsigned long beamforming_cal_only : 1;
 
 	int (*send_calibration)(struct bcm4377_data *bcm4377);
 	int (*send_ptb)(struct bcm4377_data *bcm4377,
@@ -2235,7 +2238,7 @@ static int bcm4377_probe_of(struct bcm4377_data *bcm4377)
 	}
 	bcm4377->taurus_cal_blob = of_get_property(np, "brcm,taurus-cal-blob",
 						   &bcm4377->taurus_cal_size);
-	if (!bcm4377->taurus_cal_blob) {
+	if (!bcm4377->taurus_cal_blob && !bcm4377->hw->beamforming_cal_only) {
 		dev_err(&bcm4377->pdev->dev,
 			"no brcm,taurus-cal-blob property\n");
 		return -ENOENT;
@@ -2523,6 +2526,7 @@ static const struct bcm4377_hw bcm4377_hw_variants[] = {
 		.broken_mws_transport_config = true,
 		.broken_le_coded = true,
 		.broken_le_ext_adv_report_phy = true,
+		.beamforming_cal_only = true,
 		.send_calibration = bcm4388_send_calibration,
 		.send_ptb = bcm4378_send_ptb,
 	},
